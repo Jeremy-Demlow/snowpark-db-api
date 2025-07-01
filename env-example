@@ -1,0 +1,36 @@
+# Example environment variables for Snowpark DB-API Transfer
+# Copy this file to .env and update with your actual values
+
+# Source Database Configuration
+DB_TYPE=sqlserver
+SOURCE_HOST=your-sqlserver-host.example.com
+SOURCE_PORT=1433
+SOURCE_USERNAME=your-sqlserver-username
+SOURCE_PASSWORD=your-sqlserver-password
+SOURCE_DATABASE=your-source-database
+SOURCE_TABLE=your_source_table
+
+# Snowflake Configuration
+SNOWFLAKE_ACCOUNT=your-account.snowflakecomputing.com
+SNOWFLAKE_USER=your-snowflake-username
+SNOWFLAKE_PASSWORD=your-snowflake-password
+SNOWFLAKE_ROLE=ACCOUNTADMIN
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_DATABASE=your-destination-database
+SNOWFLAKE_SCHEMA=PUBLIC
+
+# Transfer Configuration
+DESTINATION_TABLE=your_destination_table
+TRANSFER_MODE=overwrite
+BATCH_SIZE=10000
+MAX_WORKERS=4
+FETCH_SIZE=1000
+
+# Partitioning for large datasets (optional)
+# PARTITION_COLUMN=id
+# LOWER_BOUND=1
+# UPPER_BOUND=1000000
+# NUM_PARTITIONS=8
+
+# Logging
+LOG_LEVEL=INFO 

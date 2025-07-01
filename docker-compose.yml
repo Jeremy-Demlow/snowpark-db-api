@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  snowpark-transfer:
+    build: .
+    container_name: snowpark-db-api
+    environment:
+      # Source Database Configuration
+      - DB_TYPE=${DB_TYPE:-sqlserver}
+      - SOURCE_HOST=${SOURCE_HOST}
+      - SOURCE_PORT=${SOURCE_PORT:-1433}
+      - SOURCE_USERNAME=${SOURCE_USERNAME}
+      - SOURCE_PASSWORD=${SOURCE_PASSWORD}
+      - SOURCE_DATABASE=${SOURCE_DATABASE}
+      - SOURCE_TABLE=${SOURCE_TABLE}
+      
+      # Snowflake Configuration
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
+      - SNOWFLAKE_USER=${SNOWFLAKE_USER}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+      - SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE}
+      - SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}
+      - SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}
+      - SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA:-PUBLIC}
+      
+      # Transfer Configuration
+      - DESTINATION_TABLE=${DESTINATION_TABLE}
+      - TRANSFER_MODE=${TRANSFER_MODE:-overwrite}
+      - BATCH_SIZE=${BATCH_SIZE:-10000}
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+      - FETCH_SIZE=${FETCH_SIZE:-1000}
+      
+      # Partitioning (for large datasets)
+      - PARTITION_COLUMN=${PARTITION_COLUMN}
+      - LOWER_BOUND=${LOWER_BOUND}
+      - UPPER_BOUND=${UPPER_BOUND}
+      - NUM_PARTITIONS=${NUM_PARTITIONS}
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/app/logs/transfer.log
+      
+    volumes:
+      # Mount config directory for configuration files
+      - ./config:/app/config:ro
+      # Mount logs directory for persistent logging
+      - ./logs:/app/logs
+      # Mount data directory for metadata and exports
+      - ./data:/app/data
+      
+    # Override default command for interactive use
+    # Uncomment one of the following based on your use case:
+    
+    # For one-time transfer (replace with your actual values)
+    # command: >
+    #   python -m snowpark_db_api.cli transfer
+    #   --host your-sql-server-host
+    #   --username your-username
+    #   --password your-password
+    #   --database your-database
+    #   --source-table your-table
+    #   --sf-account your-snowflake-account
+    #   --sf-user your-snowflake-user
+    #   --sf-password your-snowflake-password
+    #   --sf-role your-role
+    #   --sf-warehouse your-warehouse
+    #   --sf-database your-snowflake-database
+    
+    # For config file based transfer
+    # command: python -m snowpark_db_api.cli transfer --config /app/config/transfer-config.yaml
+    
+    # For interactive shell (keep container running)
+    command: tail -f /dev/null
+    
+    restart: unless-stopped
+    
+    # Network configuration
+    networks:
+      - snowpark-network
+
+  # Optional: Add a sidecar container for monitoring/logging
+  logs-viewer:
+    image: alpine:latest
+    container_name: snowpark-logs
+    volumes:
+      - ./logs:/logs:ro
+    command: tail -f /logs/transfer.log
+    depends_on:
+      - snowpark-transfer
+    networks:
+      - snowpark-network
+    profiles:
+      - monitoring
+
+networks:
+  snowpark-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
+  config:
+    driver: local
+  data:
+    driver: local 

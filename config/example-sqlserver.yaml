@@ -1,0 +1,47 @@
+# Example configuration for SQL Server to Snowflake transfer
+# Copy this file and update with your actual credentials
+
+database_type: sqlserver
+
+# Source Database Configuration
+source_db:
+  host: your-sqlserver-host.example.com
+  port: 1433
+  username: your-sqlserver-username
+  password: your-sqlserver-password
+  database: your-source-database
+  # SQL Server specific options
+  driver: "ODBC Driver 18 for SQL Server"
+  trust_server_certificate: true
+
+# Snowflake Configuration
+snowflake:
+  account: your-account.snowflakecomputing.com
+  user: your-snowflake-username
+  password: your-snowflake-password
+  role: ACCOUNTADMIN
+  warehouse: COMPUTE_WH
+  database: your-destination-database
+  schema: PUBLIC
+
+# Transfer Configuration
+transfer:
+  source_table: your_source_table
+  destination_table: your_destination_table  # Optional: defaults to source_table
+  mode: overwrite  # Options: overwrite, append, error
+  
+  # Performance tuning
+  batch_size: 10000
+  max_workers: 4
+  fetch_size: 1000
+  query_timeout: 300
+  
+  # For large datasets - enable partitioning
+  # partition_column: id
+  # lower_bound: 1
+  # upper_bound: 1000000
+  # num_partitions: 8
+
+# Logging
+log_level: INFO
+log_file: /app/logs/transfer.log 

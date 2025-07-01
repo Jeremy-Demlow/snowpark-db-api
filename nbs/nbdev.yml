@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "snowpark-db-api"
+  site-url: "https://Jeremy-Demlow.github.io/snowpark-db-api"
+  description: "Creating a repo that allows us to build this effectively for sql-server to snowflake"
+  repo-branch: main
+  repo-url: "https://github.com/Jeremy-Demlow/snowpark-db-api"
