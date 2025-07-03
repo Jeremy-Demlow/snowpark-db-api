@@ -12,7 +12,7 @@
 | **Oracle** | 🔧 Code Support | ⚠️ **Needs Testing** |
 | **Databricks** | 🔧 Code Support | ⚠️ **Needs Testing** |
 
-**🚨 Important:** This library has been **extensively tested and validated only with SQL Server**. While the code includes support for PostgreSQL, MySQL, Oracle, and Databricks, these database types have **not been tested** in real-world scenarios.
+**🚨 Important:** This library has been **extensively tested and validated only with MySQL Server**. While the code includes support for PostgreSQL, Oracle, and Databricks, these database types have **not been tested** in real-world scenarios.
 
 **If you plan to use non-SQL Server databases:**
 - 🧪 **Test thoroughly** with small datasets first
