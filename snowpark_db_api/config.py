@@ -21,13 +21,20 @@ class SourceConfig(BaseModel):
     """Source database configuration with environment variable support."""
     host: str = Field(..., description="Database host")
     port: int = Field(1433, description="Database port")
-    username: str = Field(..., description="Database username")
-    password: str = Field(..., description="Database password") 
+    username: Optional[str] = Field(None, description="Database username")
+    password: Optional[str] = Field(None, description="Database password") 
     database: str = Field(..., description="Database name")
     
     # SQL Server specific
     driver: str = Field("ODBC Driver 18 for SQL Server", description="ODBC driver")
     trust_server_certificate: bool = Field(True, description="Trust server certificate")
+    
+    # Windows/Kerberos Authentication options for SQL Server
+    use_windows_auth: bool = Field(False, description="Use Windows authentication (Trusted_Connection)")
+    use_kerberos: bool = Field(False, description="Use Kerberos authentication")
+    kerberos_realm: Optional[str] = Field(None, description="Kerberos realm (optional)")
+    kerberos_service: Optional[str] = Field(None, description="Kerberos service name (optional)")
+    integrated_security: Optional[str] = Field(None, description="Integrated Security setting (SSPI, etc.)")
     
     # Oracle specific  
     service_name: str = Field("", description="Oracle service name")
@@ -43,11 +50,19 @@ class SourceConfig(BaseModel):
         return cls(
             host=os.getenv("SOURCE_HOST", ""),
             port=int(os.getenv("SOURCE_PORT", "1433")),
-            username=os.getenv("SOURCE_USERNAME", ""),
-            password=os.getenv("SOURCE_PASSWORD", ""),
+            username=os.getenv("SOURCE_USERNAME"),
+            password=os.getenv("SOURCE_PASSWORD"),
             database=os.getenv("SOURCE_DATABASE", ""),
             driver=os.getenv("SOURCE_DRIVER", "ODBC Driver 18 for SQL Server"),
             trust_server_certificate=os.getenv("SOURCE_TRUST_CERT", "true").lower() == "true",
+            
+            # Windows/Kerberos Authentication
+            use_windows_auth=os.getenv("SOURCE_USE_WINDOWS_AUTH", "false").lower() == "true",
+            use_kerberos=os.getenv("SOURCE_USE_KERBEROS", "false").lower() == "true",
+            kerberos_realm=os.getenv("SOURCE_KERBEROS_REALM"),
+            kerberos_service=os.getenv("SOURCE_KERBEROS_SERVICE"),
+            integrated_security=os.getenv("SOURCE_INTEGRATED_SECURITY"),
+            
             service_name=os.getenv("SOURCE_SERVICE_NAME", ""),
             server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME", ""),
             http_path=os.getenv("DATABRICKS_HTTP_PATH", ""),

@@ -25,10 +25,40 @@ def create_sqlserver_connection(config: SourceConfig) -> Callable[[], Any]:
             f"DRIVER={{{config.driver}}};"
             f"SERVER={config.host},{config.port};"
             f"DATABASE={config.database};"
-            f"UID={config.username};"
-            f"PWD={config.password};"
         )
         
+        # Choose authentication method
+        if config.use_windows_auth:
+            # Windows Authentication (Trusted Connection)
+            connection_str += "Trusted_Connection=yes;"
+            logger.debug(f"Using Windows authentication for SQL Server: {config.host}:{config.port}")
+        elif config.use_kerberos:
+            # Kerberos Authentication
+            connection_str += "Integrated Security=SSPI;"
+            if config.kerberos_realm:
+                connection_str += f"Kerberos_Realm={config.kerberos_realm};"
+            if config.kerberos_service:
+                connection_str += f"Kerberos_Service={config.kerberos_service};"
+            logger.debug(f"Using Kerberos authentication for SQL Server: {config.host}:{config.port}")
+        elif config.integrated_security:
+            # Custom Integrated Security
+            connection_str += f"Integrated Security={config.integrated_security};"
+            logger.debug(f"Using integrated security ({config.integrated_security}) for SQL Server: {config.host}:{config.port}")
+        else:
+            # Standard username/password authentication
+            if not config.username or not config.password:
+                raise ValueError(
+                    "Username and password are required for SQL Server authentication. "
+                    "For Windows authentication, set use_windows_auth=True. "
+                    "For Kerberos authentication, set use_kerberos=True."
+                )
+            connection_str += (
+                f"UID={config.username};"
+                f"PWD={config.password};"
+            )
+            logger.debug(f"Using username/password authentication for SQL Server: {config.host}:{config.port}")
+        
+        # Add TrustServerCertificate if specified
         if config.trust_server_certificate:
             connection_str += "TrustServerCertificate=yes;"
         

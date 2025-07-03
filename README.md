@@ -7,7 +7,7 @@
 
 | Database Type | Support Status | Testing Status |
 |---------------|----------------|----------------|
-| **SQL Server** | ✅ Full Support | ✅ **Extensively Tested** |
+| **SQL Server** | ✅ Full Support + Windows/Kerberos Auth | ✅ **Extensively Tested** |
 | **PostgreSQL** | 🔧 Code Support | ⚠️ **Needs Testing** |
 | **Oracle** | 🔧 Code Support | ⚠️ **Needs Testing** |
 | **Databricks** | 🔧 Code Support | ⚠️ **Needs Testing** |
@@ -19,6 +19,16 @@
 - 🐛 **Expect potential issues** with connection strings, data types, or SQL syntax
 - 🤝 **Contributions welcome** - help us test and improve support for other databases
 - 📝 **Report issues** if you encounter problems with non-SQL Server databases
+
+## 🔐 **SQL Server Authentication Methods**
+
+The library supports multiple authentication methods for SQL Server:
+
+1. **Username/Password Authentication** (default)
+2. **Windows Authentication** (Trusted Connection) - ✅ **New!**
+3. **Kerberos Authentication** (SSPI) - ✅ **New!**
+
+For detailed examples and configuration options, see: [**SQL Server Windows/Kerberos Authentication Guide**](./SQL_SERVER_WINDOWS_KERBEROS_AUTH.md)
 
 ---
 
@@ -164,6 +174,30 @@ SOURCE_PORT=1433
 SOURCE_TRUSTED_CONNECTION=false
 SOURCE_ENCRYPT=true
 SOURCE_TRUST_SERVER_CERTIFICATE=false
+```
+
+#### SQL Server with Windows Authentication
+```bash
+DB_TYPE=sqlserver
+SOURCE_HOST=your-server.database.windows.net
+SOURCE_DATABASE=your_database
+SOURCE_PORT=1433
+SOURCE_USE_WINDOWS_AUTH=true
+SOURCE_DRIVER=ODBC Driver 18 for SQL Server
+SOURCE_TRUST_CERT=true
+```
+
+#### SQL Server with Kerberos Authentication
+```bash
+DB_TYPE=sqlserver
+SOURCE_HOST=your-server.database.windows.net
+SOURCE_DATABASE=your_database
+SOURCE_PORT=1433
+SOURCE_USE_KERBEROS=true
+SOURCE_KERBEROS_REALM=YOUR.DOMAIN.COM
+SOURCE_KERBEROS_SERVICE=MSSQLSvc
+SOURCE_DRIVER=ODBC Driver 18 for SQL Server
+SOURCE_TRUST_CERT=true
 ```
 
 #### PostgreSQL
@@ -538,6 +572,14 @@ python -m snowpark_db_api transfer \
 # Query-based transfer with auto-derived destination from alias
 python -m snowpark_db_api transfer \
   --query "(SELECT order_id, customer_id, order_amount, order_status, last_updated FROM dbo.customer_orders WHERE last_updated > '2024-01-01') AS recent_orders"
+
+# SQL Server with Windows Authentication
+python -m snowpark_db_api transfer \
+  --source-table dbo.orders \
+  --source-host your-server.database.windows.net \
+  --source-database your_database \
+  --source-use-windows-auth \
+  --destination-table ORDERS_COPY
 ```
 
 ### 🌍 Environment Variable Support
