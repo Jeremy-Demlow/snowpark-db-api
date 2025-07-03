@@ -108,17 +108,6 @@ graph TB
 
 ---
 
-## ✅ Key Problems Solved
-
-### ❌ No More "Silly Names"!
-
-**OLD CONFUSING WAY:**
-```bash
-# Why do we need a fake table name?!
---source-table "fake_name" --query "(SELECT * FROM real_table) AS fake_name"
-```
----
-
 ## 📄 METHOD 1: .env File Configuration (Recommended for Getting Started)
 
 ### 🚀 Quick Start with .env
