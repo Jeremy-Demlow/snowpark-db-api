@@ -3,34 +3,35 @@
 
 # Source Database Configuration
 DB_TYPE=sqlserver
-SOURCE_HOST=your-sqlserver-host.example.com
+SOURCE_HOST=your-server.database.windows.net
 SOURCE_PORT=1433
-SOURCE_USERNAME=your-sqlserver-username
-SOURCE_PASSWORD=your-sqlserver-password
-SOURCE_DATABASE=your-source-database
-SOURCE_TABLE=your_source_table
+SOURCE_USERNAME=your_username
+SOURCE_PASSWORD=your_password
+SOURCE_DATABASE=your_database
+SOURCE_TABLE=dbo.your_table
 
 # Snowflake Configuration
-SNOWFLAKE_ACCOUNT=your-account.snowflakecomputing.com
-SNOWFLAKE_USER=your-snowflake-username
-SNOWFLAKE_PASSWORD=your-snowflake-password
+SNOWFLAKE_ACCOUNT=your_account
+SNOWFLAKE_USER=your_snowflake_user
+SNOWFLAKE_PASSWORD=your_snowflake_password
 SNOWFLAKE_ROLE=ACCOUNTADMIN
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-SNOWFLAKE_DATABASE=your-destination-database
+SNOWFLAKE_DATABASE=your_snowflake_database
 SNOWFLAKE_SCHEMA=PUBLIC
 
 # Transfer Configuration
+TARGET_TABLE=your_target_table
 DESTINATION_TABLE=your_destination_table
 TRANSFER_MODE=overwrite
 BATCH_SIZE=10000
 MAX_WORKERS=4
 FETCH_SIZE=1000
 
-# Partitioning for large datasets (optional)
-# PARTITION_COLUMN=id
-# LOWER_BOUND=1
-# UPPER_BOUND=1000000
-# NUM_PARTITIONS=8
+# Partitioning Configuration (Optional - for large datasets)
+PARTITION_COLUMN=
+LOWER_BOUND=
+UPPER_BOUND=
+NUM_PARTITIONS=
 
-# Logging
+# Logging Configuration
 LOG_LEVEL=INFO 

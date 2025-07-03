@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  # Smoke tests - no database credentials needed
+  smoke-tests:
+    build:
+      context: .
+      target: testing
+    image: snowpark-db-api-test:latest
+    command: ["python", "run_tests.py", "smoke"]
+    volumes:
+      - ./test-results:/app/test-results
+      - ./htmlcov:/app/htmlcov
+    environment:
+      - PYTHONPATH=/app
+      - PYTEST_CURRENT_TEST=1
+    profiles:
+      - smoke
+      - all
+  
+  # Functional tests - requires database credentials
+  functional-tests:
+    build:
+      context: .
+      target: testing
+    image: snowpark-db-api-test:latest
+    command: ["python", "run_tests.py", "functional"]
+    volumes:
+      - ./test-results:/app/test-results
+      - ./htmlcov:/app/htmlcov
+    environment:
+      # Source database (SQL Server)
+      - SOURCE_HOST=${SOURCE_HOST}
+      - SOURCE_DATABASE=${SOURCE_DATABASE}
+      - SOURCE_USERNAME=${SOURCE_USERNAME}
+      - SOURCE_PASSWORD=${SOURCE_PASSWORD}
+      - SOURCE_PORT=${SOURCE_PORT:-1433}
+      
+      # Snowflake
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
+      - SNOWFLAKE_USER=${SNOWFLAKE_USER}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+      - SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE:-SYSADMIN}
+      - SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE:-COMPUTE_WH}
+      - SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}
+      - SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA:-PUBLIC}
+      
+      # Testing settings
+      - PYTHONPATH=/app
+      - PYTEST_CURRENT_TEST=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    profiles:
+      - functional
+      - all
+  
+  # Coverage tests - comprehensive testing with coverage analysis
+  coverage-tests:
+    build:
+      context: .
+      target: testing
+    image: snowpark-db-api-test:latest
+    command: ["python", "run_tests.py", "coverage"]
+    volumes:
+      - ./test-results:/app/test-results
+      - ./htmlcov:/app/htmlcov
+    environment:
+      # Source database (SQL Server)
+      - SOURCE_HOST=${SOURCE_HOST}
+      - SOURCE_DATABASE=${SOURCE_DATABASE}
+      - SOURCE_USERNAME=${SOURCE_USERNAME}
+      - SOURCE_PASSWORD=${SOURCE_PASSWORD}
+      - SOURCE_PORT=${SOURCE_PORT:-1433}
+      
+      # Snowflake
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
+      - SNOWFLAKE_USER=${SNOWFLAKE_USER}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+      - SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE:-SYSADMIN}
+      - SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE:-COMPUTE_WH}
+      - SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}
+      - SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA:-PUBLIC}
+      
+      # Testing settings
+      - PYTHONPATH=/app
+      - PYTEST_CURRENT_TEST=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    profiles:
+      - coverage
+      - all
+
+  # Development testing - mounts local code for rapid iteration
+  dev-tests:
+    build:
+      context: .
+      target: testing
+    image: snowpark-db-api-test:latest
+    command: ["python", "run_tests.py", "smoke"]
+    volumes:
+      - ./snowpark_db_api:/app/snowpark_db_api
+      - ./tests:/app/tests
+      - ./test-results:/app/test-results
+      - ./htmlcov:/app/htmlcov
+      - ./run_tests.py:/app/run_tests.py
+    environment:
+      - PYTHONPATH=/app
+      - PYTEST_CURRENT_TEST=1
+    profiles:
+      - dev
+    stdin_open: true
+    tty: true 

@@ -27,7 +27,11 @@ def setup_logging(
     """
     # Create logger
     logger = logging.getLogger("snowpark_db_api")
-    logger.setLevel(getattr(logging, log_level.upper()))
+    # Clean log level and ensure it's valid
+    clean_log_level = log_level.strip().upper()
+    if not hasattr(logging, clean_log_level):
+        clean_log_level = "INFO"  # Default fallback
+    logger.setLevel(getattr(logging, clean_log_level))
     
     # Clear existing handlers
     logger.handlers.clear()

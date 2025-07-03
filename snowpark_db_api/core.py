@@ -1,387 +1,530 @@
-"""Core data transfer functionality using Snowpark DB-API.
-
-This module provides the main data transfer logic using the new Snowpark DB-API
-for efficient, scalable data movement from various databases to Snowflake.
+"""
+Core data transfer functionality.
+Clean, efficient transfer operations
 """
 
-from snowflake.snowpark import Session
-from snowflake.snowpark.exceptions import SnowparkSQLException
-from typing import Optional, Dict, Any, List
+from typing import Optional, Any, Dict, List
 import logging
-from datetime import datetime
-from multiprocessing import freeze_support
 import traceback
+import json
+from datetime import datetime
+from pathlib import Path
+import psutil
 
-from .config import AppConfig, DatabaseType
-from .connections import get_connection_factory, test_connection
-from .utils import ProgressTracker, validate_table_name, save_transfer_metadata, print_banner
+from snowflake.snowpark import Session
+from snowpark_db_api.config import Config, get_config, DatabaseType
+from snowpark_db_api.connections import create_connection
+from snowpark_db_api.snowflake_connection import SnowflakeConnection, ConnectionConfig
+from snowpark_db_api.utils import ProgressTracker, setup_logging
 
-__all__ = ['DataTransfer', 'transfer_data', 'create_snowflake_session']
-
+# Set up logging
 logger = logging.getLogger(__name__)
 
 class DataTransfer:
-    """Main class for handling data transfers using Snowpark DB-API."""
+    """Main data transfer class. Simple, clean interface."""
     
-    def __init__(self, config: AppConfig):
-        """Initialize data transfer with configuration.
-        
-        Args:
-            config: Application configuration
-        """
+    def __init__(self, config: Config):
+        """Initialize with configuration."""
         self.config = config
-        self.session: Optional[Session] = None
-        self.connection_factory = None
-        self.transfer_stats = {
-            'start_time': None,
-            'end_time': None,
-            'rows_transferred': 0,
-            'errors': 0,
-            'warnings': 0
-        }
+        self.source_connection = None
+        self.snowflake_connection = None
+        self.session = None
+        self.transfer_stats = {}
+        
+        # Set up logging
+        setup_logging(config.log_level)
     
     def setup_connections(self) -> bool:
-        """Setup database connections.
-        
-        Returns:
-            True if connections are successful, False otherwise
-        """
+        """Set up database connections. Returns True if successful."""
         try:
-            logger.info("Setting up database connections...")
+            logger.info("Setting up connections")
             
-            # Create source database connection factory
-            self.connection_factory = get_connection_factory(
-                self.config.database_type, 
-                self.config.source_db
+            # Source database connection - create factory function
+            logger.debug("Setting up source database connection factory")
+            from snowpark_db_api.connections import (
+                create_sqlserver_connection, create_postgresql_connection, 
+                create_mysql_connection, create_oracle_connection, create_databricks_connection
             )
+            from snowpark_db_api.config import DatabaseType
             
-            # Test source connection
-            logger.info("Testing source database connection...")
-            if not test_connection(self.connection_factory):
-                logger.error("Failed to connect to source database")
+            # Map database types to factory functions
+            factory_map = {
+                DatabaseType.SQLSERVER: create_sqlserver_connection,
+                DatabaseType.POSTGRESQL: create_postgresql_connection,
+                DatabaseType.MYSQL: create_mysql_connection,
+                DatabaseType.ORACLE: create_oracle_connection,
+                DatabaseType.DATABRICKS: create_databricks_connection,
+            }
+            
+            if self.config.database_type not in factory_map:
+                logger.error(f"Unsupported database type: {self.config.database_type}")
                 return False
+                
+            # Create connection factory (store the factory, not the connection)
+            self.source_connection = factory_map[self.config.database_type](self.config.source)
+            logger.debug("Source database factory created")
             
-            # Create Snowflake session
-            logger.info("Creating Snowflake session...")
-            self.session = create_snowflake_session(self.config.snowflake)
+            # Snowflake connection
+            logger.debug("Connecting to Snowflake")
+            sf_config = ConnectionConfig(
+                account=self.config.snowflake.account,
+                user=self.config.snowflake.user,
+                password=self.config.snowflake.password,
+                role=self.config.snowflake.role,
+                warehouse=self.config.snowflake.warehouse,
+                database=self.config.snowflake.database,
+                schema=self.config.snowflake.db_schema,
+                create_db_if_missing=self.config.snowflake.create_db_if_missing
+            )
+            self.snowflake_connection = SnowflakeConnection.from_config(sf_config)
+            self.session = self.snowflake_connection.session
+            logger.debug("Snowflake connected")
             
-            # Test Snowflake connection
-            if not self._test_snowflake_connection():
-                logger.error("Failed to connect to Snowflake")
-                return False
-            
-            logger.info("All connections established successfully")
+            logger.info("All connections established")
             return True
             
         except Exception as e:
-            logger.error(f"Error setting up connections: {e}")
+            logger.error(f"Connection setup failed: {e}")
+            logger.debug(traceback.format_exc())
             return False
     
-    def _test_snowflake_connection(self) -> bool:
-        """Test Snowflake connection."""
+    def cleanup(self):
+        """Clean up connections."""
         try:
-            result = self.session.sql("SELECT 1").collect()
-            return len(result) == 1
+            # Note: source_connection is a factory function, not a connection object
+            # Individual connections are managed by Snowpark internally
+            if self.snowflake_connection:
+                self.snowflake_connection.close()
+            logger.debug("Connections closed")
         except Exception as e:
-            logger.error(f"Snowflake connection test failed: {e}")
-            return False
+            logger.warning(f"Cleanup error: {e}")
     
-    def transfer_table(self, query: Optional[str] = None) -> bool:
-        """Transfer data from source to Snowflake.
+    def transfer_table(self, query: Optional[str] = None, limit_rows: Optional[int] = None) -> bool:
+        """Transfer data from source to Snowflake. Main transfer method."""
+        start_time = datetime.now()
+        source_table = self.config.transfer.source_table
+        dest_table = self.config.transfer.destination_table
         
-        Args:
-            query: Optional custom SQL query. If not provided, transfers entire table.
-            
-        Returns:
-            True if transfer is successful, False otherwise
-        """
-        try:
-            self.transfer_stats['start_time'] = datetime.now()
-            
-            # Validate and prepare table names
-            source_table = validate_table_name(self.config.transfer.source_table)
-            dest_table = validate_table_name(self.config.transfer.destination_table)
-            
+        if query:
+            logger.info(f"Starting transfer using custom query -> {dest_table}")
+            logger.debug(f"Query: {query}")
+        else:
             logger.info(f"Starting transfer: {source_table} -> {dest_table}")
+        
+        try:
+            logger.debug("Executing data transfer using Snowpark DB-API")
             
-            # Build dbapi parameters
-            dbapi_params = self._build_dbapi_params(source_table, query)
+            # Determine approach: table-based or query-based
+            if query:
+                logger.debug(f"Using custom query approach")
+                df = self._execute_query_transfer(query)
+            else:
+                logger.debug(f"Using table-based approach for {source_table}")
+                df = self._execute_table_transfer(source_table)
             
-            # Execute transfer using Snowpark DB-API
-            logger.info("Executing data transfer using Snowpark DB-API...")
-            df = self.session.read.dbapi(
-                self.connection_factory,
-                **dbapi_params
-            )
+            # Apply row limit if specified
+            if limit_rows:
+                logger.debug(f"Limiting to {limit_rows} rows")
+                df = df.limit(limit_rows)
             
-            # Get row count for progress tracking
-            logger.info("Getting row count...")
+            # Get row count and memory usage
+            mem_before = self._get_memory_usage()
             row_count = df.count()
+            mem_after = self._get_memory_usage()
+            
             logger.info(f"Transferring {row_count:,} rows")
+            logger.debug(f"Memory for count: {mem_after - mem_before:.1f}MB")
             
-            # Write to Snowflake table
-            logger.info(f"Writing data to Snowflake table: {dest_table}")
-            write_result = df.write.mode(self.config.transfer.mode).save_as_table(dest_table)
+            # Write to Snowflake
+            logger.debug(f"Writing to table: {dest_table}")
+            mem_before_write = self._get_memory_usage()
+            df.write.mode(self.config.transfer.mode).save_as_table(dest_table)
+            mem_after_write = self._get_memory_usage()
             
-            # Update statistics
-            self.transfer_stats['rows_transferred'] = row_count
-            self.transfer_stats['end_time'] = datetime.now()
+            # Record transfer statistics
+            end_time = datetime.now()
+            self.transfer_stats = {
+                'start_time': start_time,
+                'end_time': end_time,
+                'rows_transferred': row_count,
+                'errors': 0,
+                'warnings': 0,
+                'memory_used_mb': mem_after_write - mem_before,
+                'duration_seconds': (end_time - start_time).total_seconds()
+            }
             
             # Save metadata
-            self._save_transfer_metadata(source_table, dest_table, row_count)
+            self._save_transfer_metadata()
             
-            logger.info(f"Transfer completed successfully: {row_count:,} rows")
+            logger.info(f"Transfer completed: {row_count:,} rows in {self.transfer_stats['duration_seconds']:.1f}s")
             return True
             
-        except SnowparkSQLException as e:
-            logger.error(f"Snowpark SQL error during transfer: {e}")
-            self.transfer_stats['errors'] += 1
-            return False
         except Exception as e:
-            logger.error(f"Error during transfer: {e}")
+            logger.error(f"Transfer failed: {e}")
             logger.debug(traceback.format_exc())
-            self.transfer_stats['errors'] += 1
             return False
     
-    def _build_dbapi_params(self, source_table: str, query: Optional[str] = None) -> Dict[str, Any]:
-        """Build parameters for dbapi call.
-        
-        Args:
-            source_table: Source table name
-            query: Optional custom query
-            
-        Returns:
-            Dictionary of dbapi parameters
-        """
-        params = {}
-        
-        # Table or query
-        if query:
-            params['query'] = query
-        else:
-            params['table'] = source_table
-        
-        # Performance parameters
-        if self.config.transfer.fetch_size:
-            params['fetch_size'] = self.config.transfer.fetch_size
-        
-        if self.config.transfer.max_workers:
-            params['max_workers'] = self.config.transfer.max_workers
-        
-        if self.config.transfer.query_timeout:
-            params['query_timeout'] = self.config.transfer.query_timeout
-        
-        # Partitioning parameters for large datasets
-        if self.config.transfer.partition_column:
-            params['column'] = self.config.transfer.partition_column
-            
-            if self.config.transfer.lower_bound is not None:
-                params['lower_bound'] = self.config.transfer.lower_bound
-            
-            if self.config.transfer.upper_bound is not None:
-                params['upper_bound'] = self.config.transfer.upper_bound
-            
-            if self.config.transfer.num_partitions:
-                params['num_partitions'] = self.config.transfer.num_partitions
-        
-        logger.debug(f"DB-API parameters: {params}")
-        return params
-    
-    def _save_transfer_metadata(self, source_table: str, dest_table: str, row_count: int):
-        """Save transfer metadata to file."""
+    def _execute_table_transfer(self, table_name: str):
+        """Execute table-based transfer."""
         try:
-            source_info = {
-                'database_type': self.config.database_type.value,
-                'host': self.config.source_db.host,
-                'database': self.config.source_db.database,
-                'table': source_table
+            df = self.session.read.dbapi(
+                self.source_connection,
+                table=table_name,
+                fetch_size=self.config.transfer.fetch_size,
+                query_timeout=self.config.transfer.query_timeout,
+                max_workers=self.config.transfer.max_workers
+            )
+            logger.debug("Table-based transfer executed")
+            return df
+        except Exception as e:
+            logger.error(f"Table transfer failed: {e}")
+            raise
+    
+    def _execute_query_transfer(self, query: str):
+        """Execute query-based transfer."""
+        try:
+            # Try without custom schema first
+            df = self.session.read.dbapi(
+                self.source_connection,
+                query=query,
+                fetch_size=self.config.transfer.fetch_size,
+                query_timeout=self.config.transfer.query_timeout,
+                max_workers=self.config.transfer.max_workers
+            )
+            logger.debug("Query executed successfully")
+            return df
+            
+        except Exception as query_error:
+            logger.debug(f"Query failed without schema: {query_error}")
+            logger.debug("Trying with schema generation")
+            
+            try:
+                # Generate custom schema and retry
+                custom_schema = self._get_query_schema(query)
+                logger.debug(f"Generated schema with {len(custom_schema.fields)} columns")
+                
+                df = self.session.read.dbapi(
+                    self.source_connection,
+                    query=query,
+                    fetch_size=self.config.transfer.fetch_size,
+                    query_timeout=self.config.transfer.query_timeout,
+                    max_workers=self.config.transfer.max_workers,
+                    custom_schema=custom_schema
+                )
+                logger.debug("Query with schema executed successfully")
+                return df
+                
+            except Exception as schema_error:
+                logger.error(f"Query transfer failed: {schema_error}")
+                raise Exception(f"Both approaches failed: {query_error}, {schema_error}")
+    
+    def _get_query_schema(self, query: str):
+        """Generate schema for custom query."""
+        # Extract inner SELECT for schema detection
+        inner_query = self._extract_inner_query(query)
+        schema_query = f"SELECT TOP 0 * FROM ({inner_query}) AS schema_detection"
+        
+        logger.debug(f"Schema detection query: {schema_query}")
+        
+        # Execute schema query to get column info - create connection from factory
+        conn = self.source_connection()  # Call the factory function to get actual connection
+        cursor = conn.cursor()
+        cursor.execute(schema_query)
+        
+        # Get column information
+        columns = cursor.description
+        
+        # Map to Snowpark types
+        from snowflake.snowpark.types import StructType, StructField
+        
+        fields = []
+        for col in columns:
+            col_name = col[0]
+            sql_type_code = col[1]
+            snowpark_type = self._map_sql_type_to_snowpark(sql_type_code)
+            fields.append(StructField(col_name, snowpark_type))
+        
+        cursor.close()
+        conn.close()  # Close the connection we created
+        return StructType(fields)
+    
+    def _extract_inner_query(self, query: str) -> str:
+        """Extract inner SELECT from query pattern."""
+        query = query.strip()
+        
+        # Handle (SELECT ... ) AS alias pattern
+        if query.startswith('(') and ')' in query:
+            paren_pos = query.rfind(')')
+            inner_query = query[1:paren_pos].strip()
+            logger.debug(f"Extracted inner query: {inner_query}")
+            return inner_query
+        
+        return query
+    
+    def _map_sql_type_to_snowpark(self, sql_type_code: int):
+        """Map SQL type codes to Snowpark types."""
+        from snowflake.snowpark.types import (
+            StringType, IntegerType, DoubleType, BooleanType, 
+            DateType, TimestampType, DecimalType
+        )
+        
+        # SQL type code mappings (simplified)
+        type_mapping = {
+        # String types
+            1: StringType(),    # CHAR
+            12: StringType(),   # VARCHAR
+            -1: StringType(),   # LONGVARCHAR
+            -9: StringType(),   # NVARCHAR
+            
+            # Numeric types
+            4: IntegerType(),   # INTEGER
+            -5: IntegerType(),  # BIGINT
+            5: IntegerType(),   # SMALLINT
+            -6: IntegerType(),  # TINYINT
+            6: DoubleType(),    # FLOAT
+            8: DoubleType(),    # DOUBLE
+            2: DecimalType(18, 2),  # NUMERIC
+            3: DecimalType(18, 2),  # DECIMAL
+            
+            # Date/Time types
+            91: DateType(),     # DATE
+            93: TimestampType(), # TIMESTAMP
+        
+        # Boolean
+            16: BooleanType(),  # BOOLEAN
+        }
+        
+        snowpark_type = type_mapping.get(sql_type_code, StringType())
+        
+        if sql_type_code not in type_mapping:
+            logger.debug(f"Unknown SQL type {sql_type_code}, using StringType")
+            
+        return snowpark_type
+    
+    def _get_memory_usage(self) -> float:
+        """Get current memory usage in MB."""
+        process = psutil.Process()
+        return process.memory_info().rss / 1024 / 1024
+    
+    def _save_transfer_metadata(self):
+        """Save transfer metadata to file - only if enabled in config."""
+        if not self.config.transfer.save_metadata:
+            logger.debug("Metadata saving disabled, skipping")
+            return
+            
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            metadata_file = f"transfer_metadata_{timestamp}.json"
+            
+            metadata = {
+                'source_table': self.config.transfer.source_table,
+                'destination_table': self.config.transfer.destination_table,
+                'transfer_stats': {
+                    'start_time': self.transfer_stats['start_time'].isoformat(),
+                    'end_time': self.transfer_stats['end_time'].isoformat(),
+                    'rows_transferred': self.transfer_stats['rows_transferred'],
+                    'duration_seconds': self.transfer_stats['duration_seconds'],
+                    'memory_used_mb': self.transfer_stats['memory_used_mb']
+                },
+                'config': {
+                    'database_type': self.config.database_type,
+                    'mode': self.config.transfer.mode,
+                    'fetch_size': self.config.transfer.fetch_size,
+                    'max_workers': self.config.transfer.max_workers
+                }
             }
             
-            destination_info = {
-                'account': self.config.snowflake.account,
-                'database': self.config.snowflake.database,
-                'schema': self.config.snowflake.schema,
-                'table': dest_table
-            }
-            
-            metadata_file = f"transfer_metadata_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            save_transfer_metadata(source_info, destination_info, self.transfer_stats, metadata_file)
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+                
             logger.info(f"Transfer metadata saved to: {metadata_file}")
             
         except Exception as e:
             logger.warning(f"Failed to save transfer metadata: {e}")
     
-    def get_table_info(self, table_name: str) -> Dict[str, Any]:
-        """Get information about a source table.
-        
-        Args:
-            table_name: Name of the table to inspect
-            
-        Returns:
-            Dictionary with table information
-        """
-        try:
-            conn = self.connection_factory()
-            cursor = conn.cursor()
-            
-            # Get row count
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            row_count = cursor.fetchone()[0]
-            
-            # Get column information (this will vary by database type)
-            if self.config.database_type == DatabaseType.SQLSERVER:
-                cursor.execute(f"""
-                    SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
-                    FROM INFORMATION_SCHEMA.COLUMNS 
-                    WHERE TABLE_NAME = '{table_name}'
-                """)
-            elif self.config.database_type == DatabaseType.POSTGRESQL:
-                cursor.execute(f"""
-                    SELECT column_name, data_type, character_maximum_length
-                    FROM information_schema.columns 
-                    WHERE table_name = '{table_name}'
-                """)
-            else:
-                # Generic approach
-                cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
-                columns = [desc[0] for desc in cursor.description]
-                column_info = [{'name': col, 'type': 'unknown'} for col in columns]
-            
-            if self.config.database_type in [DatabaseType.SQLSERVER, DatabaseType.POSTGRESQL]:
-                column_info = []
-                for col in cursor.fetchall():
-                    column_info.append({
-                        'name': col[0],
-                        'type': col[1],
-                        'max_length': col[2]
-                    })
-            
-            cursor.close()
-            conn.close()
-            
-            return {
-                'table_name': table_name,
-                'row_count': row_count,
-                'columns': column_info
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting table info: {e}")
-            return {}
-    
-    def list_tables(self) -> List[str]:
-        """List all tables in the source database.
-        
-        Returns:
-            List of table names
-        """
-        try:
-            conn = self.connection_factory()
-            cursor = conn.cursor()
-            
-            if self.config.database_type == DatabaseType.SQLSERVER:
-                cursor.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE'")
-            elif self.config.database_type == DatabaseType.POSTGRESQL:
-                cursor.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-            elif self.config.database_type == DatabaseType.MYSQL:
-                cursor.execute("SHOW TABLES")
-            else:
-                logger.warning(f"Table listing not implemented for {self.config.database_type}")
-                return []
-            
-            tables = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            conn.close()
-            
-            return tables
-            
-        except Exception as e:
-            logger.error(f"Error listing tables: {e}")
-            return []
-    
-    def cleanup(self):
-        """Clean up resources."""
-        if self.session:
-            try:
-                self.session.close()
-                logger.info("Snowflake session closed")
-            except Exception as e:
-                logger.warning(f"Error closing Snowflake session: {e}")
-
-def create_snowflake_session(config) -> Session:
-    """Create a Snowflake session with the given configuration.
-    
-    Args:
-        config: Snowflake configuration
-        
-    Returns:
-        Snowflake Session object
-    """
-    connection_params = {
-        "account": config.account,
-        "user": config.user,
-        "password": config.password,
-        "role": config.role,
-        "warehouse": config.warehouse,
-        "database": config.database,
-        "schema": config.schema
-    }
-    
-    session = Session.builder.configs(connection_params).create()
-    
-    # Ensure database and schema exist
-    session.sql(f"CREATE DATABASE IF NOT EXISTS {config.database}").collect()
-    session.sql(f"USE DATABASE {config.database}").collect()
-    session.sql(f"CREATE SCHEMA IF NOT EXISTS {config.schema}").collect()
-    session.sql(f"USE SCHEMA {config.schema}").collect()
-    
-    logger.info(f"Snowflake session created: {config.account}.{config.database}.{config.schema}")
-    return session
-
-def transfer_data(config: AppConfig, query: Optional[str] = None) -> bool:
-    """Main function to transfer data from source database to Snowflake.
-    
-    Args:
-        config: Application configuration
-        query: Optional custom SQL query
-        
-    Returns:
-        True if transfer is successful, False otherwise
-    """
-    # Enable multiprocessing support (required for macOS/Windows)
-    freeze_support()
+# Simple transfer function for easy use
+def transfer_data(config: Config, query: Optional[str] = None) -> bool:
+    """Simple function to transfer data. Main entry point."""
+    # If using a query but destination not set, auto-derive it
+    if query and not config.transfer.destination_table:
+        import re
+        match = re.search(r'\)\s+AS\s+(\w+)$', query.strip(), re.IGNORECASE)
+        if match:
+            config.transfer.destination_table = match.group(1).upper()
+        else:
+            config.transfer.destination_table = "QUERY_RESULT"
     
     transfer = DataTransfer(config)
-    
     try:
-        print_banner("SNOWPARK DB-API DATA TRANSFER")
-        
-        # Setup connections
         if not transfer.setup_connections():
-            logger.error("Failed to setup database connections")
             return False
-        
-        # Execute transfer
-        success = transfer.transfer_table(query)
-        
-        # Print summary
-        if success:
-            duration = (transfer.transfer_stats['end_time'] - transfer.transfer_stats['start_time']).total_seconds()
-            from .utils import print_summary
-            print_summary(
-                f"{config.source_db.host}.{config.source_db.database}",
-                config.transfer.source_table,
-                f"{config.snowflake.database}.{config.snowflake.schema}.{config.transfer.destination_table}",
-                transfer.transfer_stats['rows_transferred'],
-                duration,
-                transfer.transfer_stats['errors']
-            )
-        
-        return success
-        
-    except Exception as e:
-        logger.error(f"Transfer failed: {e}")
-        logger.debug(traceback.format_exc())
-        return False
+        return transfer.transfer_table(query=query)
     finally:
         transfer.cleanup()
+
+def transfer_query(query: str, destination_table: Optional[str] = None, config: Optional[Config] = None) -> bool:
+    """
+    Transfer data using a custom query. Much cleaner API for query-based transfers.
+    
+    Args:
+        query: SQL query to execute (should include AS alias for auto-destination)
+        destination_table: Optional destination table name (auto-derived if not provided)
+        config: Optional config (uses get_config() if not provided)
+        
+    Examples:
+        # Auto-derive destination from query alias
+        transfer_query("(SELECT TOP 100 * FROM dbo.LargeTable) AS sample_data")
+        
+        # Explicit destination  
+        transfer_query("SELECT * FROM dbo.Orders", destination_table="ORDERS_COPY")
+    """
+    import re
+    
+    # Use provided config or get from environment
+    if config is None:
+        config = get_config()
+    
+    # Auto-derive destination table if not provided
+    if destination_table is None:
+        match = re.search(r'\)\s+AS\s+(\w+)$', query.strip(), re.IGNORECASE)
+        if match:
+            destination_table = match.group(1).upper()
+        else:
+            destination_table = "QUERY_RESULT"
+    
+    # Create a temporary transfer config for the query
+    from snowpark_db_api.config import TransferConfig
+    config.transfer = TransferConfig(
+        source_table=f"<query: {query[:50]}...>",  # Descriptive name for logging
+        destination_table=destination_table,
+        mode=config.transfer.mode,
+        fetch_size=config.transfer.fetch_size,
+        query_timeout=config.transfer.query_timeout,
+        max_workers=config.transfer.max_workers,
+        save_metadata=config.transfer.save_metadata
+    )
+    
+    return transfer_data(config, query=query)
+
+def transfer_query_transparent(query: str, destination_table: Optional[str] = None, 
+                              config: Optional[Config] = None, verbose: bool = True) -> bool:
+    """Transfer data using a custom query with optional verbose output.
+    
+    Args:
+        query: SQL query to execute (should include AS alias for auto-destination)
+        destination_table: Optional destination table name (auto-derived if not provided)
+        config: Optional config (uses get_config() if not provided)
+        verbose: Show what's happening behind the scenes
+    """
+    import re
+    
+    # Use provided config or get from environment
+    if config is None:
+        if verbose:
+            print("No config provided - reading from environment variables")
+        config = get_config()
+    
+    if verbose:
+        print(f"Source Database: {config.source.host} ({config.database_type.value})")
+        print(f"Snowflake: {config.snowflake.account}.{config.snowflake.database}.{config.snowflake.db_schema}")
+        print(f"User: {config.snowflake.user}")
+    
+    # Auto-derive destination table if not provided
+    if destination_table is None:
+        match = re.search(r'\)\s+AS\s+(\w+)$', query.strip(), re.IGNORECASE)
+        if match:
+            destination_table = match.group(1).upper()
+            if verbose:
+                print(f"Auto-derived destination: {destination_table}")
+        else:
+            destination_table = "QUERY_RESULT"
+            if verbose:
+                print(f"Default destination: {destination_table}")
+    elif verbose:
+        print(f"Explicit destination: {destination_table}")
+    
+    if verbose:
+        print(f"Executing query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print()
+    
+    # Create a temporary transfer config for the query
+    from snowpark_db_api.config import TransferConfig
+    config.transfer = TransferConfig(
+        source_table=f"<query: {query[:50]}...>",
+        destination_table=destination_table,
+        mode=config.transfer.mode,
+        fetch_size=config.transfer.fetch_size,
+        query_timeout=config.transfer.query_timeout,
+        max_workers=config.transfer.max_workers,
+        save_metadata=config.transfer.save_metadata
+    )
+    
+    return transfer_data(config, query=query)
+
+# Compatibility with existing code
+def create_snowflake_session(snowflake_config) -> Session:
+    """Create Snowflake session. For compatibility."""
+    try:
+        sf_config = ConnectionConfig(
+            account=snowflake_config.account,
+            user=snowflake_config.user,
+            password=snowflake_config.password,
+            role=snowflake_config.role,
+            warehouse=snowflake_config.warehouse,
+            database=snowflake_config.database,
+            schema=snowflake_config.db_schema
+        )
+        connection = SnowflakeConnection.from_config(sf_config)
+        return connection.session
+    except Exception as e:
+        logger.error(f"Failed to create Snowflake session: {e}")
+        raise
+
+# Enhanced Snowflake exploration functions
+def query_snowflake_table(config: Config, table_name: str, limit: int = 10):
+    """Enhanced helper to query Snowflake table. Returns Snowpark DataFrame with more info."""
+    from snowpark_db_api.snowflake_connection import ConnectionConfig
+    
+    try:
+        # Create Snowflake connection
+        sf_config = ConnectionConfig(
+            account=config.snowflake.account,
+            user=config.snowflake.user,
+            password=config.snowflake.password,
+            role=config.snowflake.role,
+            warehouse=config.snowflake.warehouse,
+            database=config.snowflake.database,
+            schema=config.snowflake.db_schema,
+            create_db_if_missing=config.snowflake.create_db_if_missing
+        )
+        
+        with SnowflakeConnection.from_config(sf_config) as sf_conn:
+            logger.info(f"Connected to {sf_conn}")
+            
+            # Use the improved sql() method
+            df = sf_conn.sql(f"SELECT * FROM {table_name} LIMIT {limit}")
+            row_count = df.count()
+            logger.info(f"Query returned {row_count} rows from {table_name}")
+            
+            return df
+                
+    except Exception as e:
+        logger.error(f"Failed to query Snowflake table {table_name}: {e}")
+        raise
+
+def explore_snowflake_connection(config: Config):
+    """Create a Snowflake connection for interactive exploration."""
+    from snowpark_db_api.snowflake_connection import ConnectionConfig
+    
+    sf_config = ConnectionConfig(
+        account=config.snowflake.account,
+        user=config.snowflake.user,
+        password=config.snowflake.password,
+        role=config.snowflake.role,
+        warehouse=config.snowflake.warehouse,
+        database=config.snowflake.database,
+        schema=config.snowflake.db_schema,
+        create_db_if_missing=config.snowflake.create_db_if_missing
+    )
+    
+    return SnowflakeConnection.from_config(sf_config)

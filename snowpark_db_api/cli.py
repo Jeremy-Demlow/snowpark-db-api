@@ -1,68 +1,77 @@
-"""Command-line interface for Snowpark DB-API transfers.
-
-This module provides a user-friendly CLI for database transfers using Typer and Rich.
+"""
+Modern CLI for Snowpark DB API transfers.
+Clean, simple commands
 """
 
-import typer
-from typing import Optional, List
+import os
 from pathlib import Path
-import yaml
+from typing import Optional
+
+import typer
 from rich.console import Console
 from rich.table import Table
-from rich import print as rprint
-from rich.progress import Progress, SpinnerColumn, TextColumn
+import yaml
 
-from .config import config_manager, DatabaseType
-from .core import transfer_data, DataTransfer
-from .utils import setup_logging, print_banner
+from snowpark_db_api.config import Config, DatabaseType, TransferConfig
+from snowpark_db_api.core import transfer_data, DataTransfer
+from snowpark_db_api.connections import create_connection
 
-# Initialize CLI app
-app = typer.Typer(
-    name="snowpark-transfer",
-    help="Professional data transfer tool using Snowpark DB-API",
-    add_completion=False
-)
-
+# Initialize CLI app and console
+app = typer.Typer(help="Snowpark DB-API Transfer Tool - Clean, simple data transfers")
 console = Console()
 
 @app.command()
 def transfer(
-    host: str = typer.Option(..., "--host", help="Source database host"),
-    username: str = typer.Option(..., "--username", help="Source database username"),
-    password: str = typer.Option(..., "--password", hide_input=True, help="Source database password"),
-    database: str = typer.Option(..., "--database", help="Source database name"),
-    source_table: str = typer.Option(..., "--source-table", help="Source table name"),
-    sf_account: str = typer.Option(..., "--sf-account", help="Snowflake account"),
-    sf_user: str = typer.Option(..., "--sf-user", help="Snowflake username"),
-    sf_password: str = typer.Option(..., "--sf-password", hide_input=True, help="Snowflake password"),
-    sf_role: str = typer.Option(..., "--sf-role", help="Snowflake role"),
-    sf_warehouse: str = typer.Option(..., "--sf-warehouse", help="Snowflake warehouse"),
-    sf_database: str = typer.Option(..., "--sf-database", help="Snowflake database"),
+    source_table: Optional[str] = typer.Option(None, "--source-table", envvar="SOURCE_TABLE", help="Source table name (optional when using --query)"),
+    query: Optional[str] = typer.Option(None, "--query", help="Custom SQL query (overrides source-table)"),
+    destination_table: Optional[str] = typer.Option(None, "--destination-table", help="Destination table name (auto-derived if not specified)"),
+    save_metadata: bool = typer.Option(False, "--save-metadata", help="Save transfer metadata to JSON file"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Configuration file")
 ):
     """Transfer data from source database to Snowflake."""
-    
-    logger = setup_logging("INFO")
-    
     try:
-        # Load and override config
-        config = config_manager.load_config(str(config_file) if config_file else None)
+        # Load configuration
+        config = Config.from_env()
         
-        # Override with CLI args
-        config.source_db.host = host
-        config.source_db.username = username  
-        config.source_db.password = password
-        config.source_db.database = database
-        config.transfer.source_table = source_table
-        config.snowflake.account = sf_account
-        config.snowflake.user = sf_user
-        config.snowflake.password = sf_password
-        config.snowflake.role = sf_role
-        config.snowflake.warehouse = sf_warehouse
-        config.snowflake.database = sf_database
+        # Determine source and destination tables
+        if query:
+            # Extract destination from query alias if not explicitly provided
+            if not destination_table:
+                destination_table = _extract_destination_from_query(query)
+            
+            # Use a descriptive source name for logging when using query
+            effective_source = source_table or f"<query: {query[:50]}...>"
+        else:
+            # Traditional table-to-table transfer
+            if not source_table:
+                console.print("[bold red]Error: --source-table is required when not using --query[/bold red]")
+                raise typer.Exit(1)
+            
+            effective_source = source_table
+            if not destination_table:
+                clean_name = source_table.split('.')[-1] if '.' in source_table else source_table
+                destination_table = clean_name.upper()
         
-        console.print("[bold green]Starting data transfer...[/bold green]")
-        success = transfer_data(config)
+        # Create TransferConfig
+        config.transfer = TransferConfig(
+            source_table=effective_source,
+            destination_table=destination_table,
+            mode=config.transfer.mode,
+            fetch_size=config.transfer.fetch_size,
+            query_timeout=config.transfer.query_timeout,
+            max_workers=config.transfer.max_workers,
+            save_metadata=save_metadata
+        )
+        
+        console.print(f"[bold green]Starting transfer...[/bold green]")
+        if query:
+            console.print(f"Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        else:
+            console.print(f"Source: {effective_source}")
+        console.print(f"Destination: {config.snowflake.database}.{config.snowflake.db_schema}.{destination_table}")
+        
+        # Execute transfer
+        success = transfer_data(config, query=query)
         
         if success:
             console.print("[bold green]✓ Transfer completed successfully![/bold green]")
@@ -74,16 +83,193 @@ def transfer(
         console.print(f"[bold red]Error: {e}[/bold red]")
         raise typer.Exit(1)
 
+def _extract_destination_from_query(query: str) -> str:
+    """Extract destination table name from query alias."""
+    import re
+    
+    # Look for AS alias pattern at the end
+    match = re.search(r'\)\s+AS\s+(\w+)$', query.strip(), re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    
+    # Fallback to generic name
+    return "QUERY_RESULT"
+
+@app.command()
+def test_connection():
+    """Test database connections."""
+    try:
+        config = Config.from_env()
+        
+        console.print("Testing source database connection...")
+        
+        # Test source connection
+        source_conn = create_connection(config.database_type, config.source)
+        if source_conn:
+            # Get connection info
+            cursor = source_conn.cursor()
+            cursor.execute("SELECT @@VERSION")
+            version = cursor.fetchone()[0]
+            cursor.close()
+            source_conn.close()
+            
+            console.print("✅ Connection successful!")
+            
+            # Display results
+            table = Table(title="Connection Test Results")
+            table.add_column("Property", style="cyan")
+            table.add_column("Value", style="green")
+            
+            table.add_row("Database Type", str(config.database_type.value))
+            table.add_row("Host", config.source.host)
+            table.add_row("Database", config.source.database)
+            table.add_row("Status", "✅ Connected")
+            table.add_row("Version", version[:100] if version else "N/A")
+            
+            console.print(table)
+        else:
+            console.print("[bold red]❌ Connection failed[/bold red]")
+            raise typer.Exit(1)
+            
+    except Exception as e:
+        console.print(f"[bold red]Connection error: {e}[/bold red]")
+        raise typer.Exit(1)
+
+@app.command()
+def list_tables(
+    schema_filter: Optional[str] = typer.Option(None, "--schema", help="Filter by schema name")
+):
+    """List available tables in the source database."""
+    try:
+        config = Config.from_env()
+        
+        # Create source database manager
+        transfer = DataTransfer(config)
+        if not transfer.setup_connections():
+            console.print("[bold red]Failed to connect to database[/bold red]")
+            raise typer.Exit(1)
+        
+        try:
+            # Get table list - call the connection factory to get actual connection
+            temp_connection = transfer.source_connection()
+            cursor = temp_connection.cursor()
+            
+            if config.database_type == DatabaseType.SQLSERVER:
+                query = """
+                SELECT 
+                    TABLE_SCHEMA as schema_name,
+                    TABLE_NAME as table_name,
+                    TABLE_TYPE as table_type
+                FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_TYPE = 'BASE TABLE'
+                """
+                if schema_filter:
+                    query += f" AND TABLE_SCHEMA = '{schema_filter}'"
+                query += " ORDER BY TABLE_SCHEMA, TABLE_NAME"
+            else:
+                # Generic query for other databases
+                query = "SELECT table_schema, table_name, table_type FROM information_schema.tables"
+                if schema_filter:
+                    query += f" WHERE table_schema = '{schema_filter}'"
+            
+            cursor.execute(query)
+            tables = cursor.fetchall()
+            cursor.close()
+            temp_connection.close()
+            
+            if not tables:
+                console.print("[yellow]No tables found[/yellow]")
+                return
+            
+            # Display results
+            table = Table(title=f"Available Tables ({len(tables)} found)")
+            table.add_column("Schema", style="cyan")
+            table.add_column("Table Name", style="green")
+            table.add_column("Type", style="blue")
+            
+            for row in tables:
+                table.add_row(str(row[0]), str(row[1]), str(row[2]))
+            
+            console.print(table)
+            
+        finally:
+            transfer.cleanup()
+        
+    except Exception as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
+        raise typer.Exit(1)
+
+@app.command()
+def preview(
+    table_name: str = typer.Argument(..., help="Table name to preview"),
+    rows: int = typer.Option(10, "--rows", help="Number of rows to preview")
+):
+    """Preview data from a table."""
+    try:
+        config = Config.from_env()
+        
+        transfer = DataTransfer(config)
+        if not transfer.setup_connections():
+            console.print("[bold red]Failed to connect to database[/bold red]")
+            raise typer.Exit(1)
+        
+        try:
+            # Execute preview query - call the connection factory to get actual connection
+            temp_connection = transfer.source_connection()
+            cursor = temp_connection.cursor()
+            
+            if config.database_type == DatabaseType.SQLSERVER:
+                query = f"SELECT TOP {rows} * FROM {table_name}"
+            else:
+                query = f"SELECT * FROM {table_name} LIMIT {rows}"
+            
+            cursor.execute(query)
+            data = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            cursor.close()
+            temp_connection.close()
+            
+            if not data:
+                console.print("[yellow]No data found in table[/yellow]")
+                return
+            
+            # Display results
+            table = Table(title=f"Preview of {table_name} ({len(data)} rows)")
+            
+            for col in columns:
+                table.add_column(col, style="cyan", max_width=30)
+            
+            for row in data:
+                formatted_row = []
+                for val in row:
+                    if val is None:
+                        formatted_row.append("[dim]NULL[/dim]")
+                    else:
+                        str_val = str(val)
+                        if len(str_val) > 50:
+                            str_val = str_val[:47] + "..."
+                        formatted_row.append(str_val)
+                
+                table.add_row(*formatted_row)
+            
+            console.print(table)
+                
+        finally:
+            transfer.cleanup()
+            
+    except Exception as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
+        raise typer.Exit(1)
+
 @app.command()
 def config_template(
-    output_file: Path = typer.Option("config.yaml", "--output", "-o")
+    output_file: Path = typer.Option("config.yaml", "--output", "-o", help="Output file path")
 ):
     """Generate a configuration template."""
-    
     template = {
         'database_type': 'sqlserver',
-        'source_db': {
-            'host': 'your-host',
+        'source': {
+            'host': 'your-server.database.windows.net',
             'username': 'your-username', 
             'password': 'your-password',
             'database': 'your-database'
@@ -92,12 +278,13 @@ def config_template(
             'account': 'your-account',
             'user': 'your-user',
             'password': 'your-password',
-            'role': 'your-role',
-            'warehouse': 'your-warehouse',
+            'role': 'ACCOUNTADMIN',
+            'warehouse': 'COMPUTE_WH',
             'database': 'your-database'
         },
         'transfer': {
-            'source_table': 'your-table'
+            'source_table': 'your-table',
+            'mode': 'overwrite'
         }
     }
     
@@ -107,227 +294,70 @@ def config_template(
     console.print(f"[green]Template saved to: {output_file}[/green]")
 
 @app.command()
-def list_tables(
-    # Database configuration (same as transfer command but fewer options)
-    db_type: DatabaseType = typer.Option(
-        DatabaseType.SQLSERVER,
-        "--db-type",
-        help="Source database type"
-    ),
-    host: str = typer.Option(..., "--host", help="Source database host"),
-    username: str = typer.Option(..., "--username", help="Source database username"),
-    password: str = typer.Option(..., "--password", hide_input=True, help="Source database password"),
-    database: str = typer.Option(..., "--database", help="Source database name"),
-    port: Optional[int] = typer.Option(None, "--port", help="Source database port"),
-    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Configuration file")
+def query(
+    sql: str = typer.Argument(..., help="SQL query to execute"),
+    limit: int = typer.Option(100, "--limit", help="Limit number of results")
 ):
-    """List all tables in the source database."""
-    
+    """Execute a SQL query on the source database."""
     try:
-        # Build minimal config for connection
-        config = _build_minimal_config(db_type, host, port, username, password, database, config_file)
-        
-        # Create transfer object and list tables
-        transfer = DataTransfer(config)
-        if not transfer.setup_connections():
-            console.print("[red]Failed to connect to source database[/red]")
-            raise typer.Exit(1)
-        
-        tables = transfer.list_tables()
-        transfer.cleanup()
-        
-        if not tables:
-            console.print("[yellow]No tables found[/yellow]")
-            return
-        
-        # Display tables in a nice table format
-        table = Table(title=f"Tables in {database}")
-        table.add_column("Table Name", style="cyan")
-        table.add_column("Index", style="magenta")
-        
-        for i, table_name in enumerate(tables, 1):
-            table.add_row(table_name, str(i))
-        
-        console.print(table)
-        
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
-
-@app.command()
-def table_info(
-    table_name: str = typer.Argument(..., help="Name of the table to inspect"),
-    # Database configuration (same as list_tables)
-    db_type: DatabaseType = typer.Option(DatabaseType.SQLSERVER, "--db-type"),
-    host: str = typer.Option(..., "--host"),
-    username: str = typer.Option(..., "--username"),
-    password: str = typer.Option(..., "--password", hide_input=True),
-    database: str = typer.Option(..., "--database"),
-    port: Optional[int] = typer.Option(None, "--port"),
-    config_file: Optional[Path] = typer.Option(None, "--config", "-c")
-):
-    """Get detailed information about a specific table."""
-    
-    try:
-        config = _build_minimal_config(db_type, host, port, username, password, database, config_file)
+        config = Config.from_env()
         
         transfer = DataTransfer(config)
         if not transfer.setup_connections():
-            console.print("[red]Failed to connect to source database[/red]")
+            console.print("[bold red]Failed to connect to database[/bold red]")
             raise typer.Exit(1)
         
-        info = transfer.get_table_info(table_name)
-        transfer.cleanup()
-        
-        if not info:
-            console.print(f"[red]Could not get information for table: {table_name}[/red]")
-            return
-        
-        # Display table info
-        console.print(f"\n[bold cyan]Table Information: {table_name}[/bold cyan]")
-        console.print(f"Row Count: [green]{info.get('row_count', 'Unknown'):,}[/green]")
-        
-        if 'columns' in info and info['columns']:
-            table = Table(title="Columns")
-            table.add_column("Column Name", style="cyan")
-            table.add_column("Data Type", style="green")
-            table.add_column("Max Length", style="yellow")
+        try:
+            # Execute query - call the connection factory to get actual connection
+            temp_connection = transfer.source_connection()
+            cursor = temp_connection.cursor()
             
-            for col in info['columns']:
-                max_len = str(col.get('max_length', '')) if col.get('max_length') else ''
-                table.add_row(
-                    col.get('name', ''),
-                    col.get('type', ''),
-                    max_len
-                )
+            # Add limit to query if not present
+            if limit and "LIMIT" not in sql.upper() and "TOP" not in sql.upper():
+                if config.database_type == DatabaseType.SQLSERVER:
+                    # Add TOP clause for SQL Server
+                    if sql.strip().upper().startswith("SELECT"):
+                        sql = sql.replace("SELECT", f"SELECT TOP {limit}", 1)
+                else:
+                    sql += f" LIMIT {limit}"
+            
+            cursor.execute(sql)
+            data = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            cursor.close()
+            temp_connection.close()
+            
+            if not data:
+                console.print("[yellow]No results returned[/yellow]")
+            return
+        
+            # Display results
+            table = Table(title=f"Query Results ({len(data)} rows)")
+            
+            for col in columns:
+                table.add_column(col, style="cyan", max_width=30)
+            
+            for row in data:
+                formatted_row = []
+                for val in row:
+                    if val is None:
+                        formatted_row.append("[dim]NULL[/dim]")
+                    else:
+                        str_val = str(val)
+                        if len(str_val) > 100:
+                            str_val = str_val[:97] + "..."
+                        formatted_row.append(str_val)
+                
+                table.add_row(*formatted_row)
             
             console.print(table)
+            
+        finally:
+            transfer.cleanup()
         
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[bold red]Error: {e}[/bold red]")
         raise typer.Exit(1)
-
-def _build_config_from_args(*args, **kwargs):
-    """Build configuration from command line arguments."""
-    # This is a helper function to convert CLI args to config
-    # Implementation would map all the CLI arguments to the config structure
-    # For brevity, I'll create a simplified version
-    
-    # Extract arguments
-    (db_type, host, port, username, password, database,
-     sf_account, sf_user, sf_password, sf_role, sf_warehouse, sf_database, sf_schema,
-     source_table, dest_table, query, mode,
-     batch_size, max_workers, fetch_size,
-     partition_column, lower_bound, upper_bound, num_partitions,
-     config_file, log_level, log_file) = args[:25]
-    
-    # Use environment variables and config file if available
-    config = config_manager.load_config(str(config_file) if config_file else None)
-    
-    # Override with CLI arguments
-    if host:
-        config.source_db.host = host
-    if port:
-        config.source_db.port = port
-    if username:
-        config.source_db.username = username
-    if password:
-        config.source_db.password = password
-    if database:
-        config.source_db.database = database
-    
-    # Snowflake config
-    config.snowflake.account = sf_account
-    config.snowflake.user = sf_user
-    config.snowflake.password = sf_password
-    config.snowflake.role = sf_role
-    config.snowflake.warehouse = sf_warehouse
-    config.snowflake.database = sf_database
-    config.snowflake.schema = sf_schema
-    
-    # Transfer config
-    config.transfer.source_table = source_table
-    config.transfer.destination_table = dest_table or source_table
-    config.transfer.mode = mode
-    config.transfer.batch_size = batch_size
-    config.transfer.max_workers = max_workers
-    config.transfer.fetch_size = fetch_size
-    
-    if partition_column:
-        config.transfer.partition_column = partition_column
-        config.transfer.lower_bound = lower_bound
-        config.transfer.upper_bound = upper_bound
-        config.transfer.num_partitions = num_partitions
-    
-    config.log_level = log_level
-    config.log_file = str(log_file) if log_file else None
-    
-    return config
-
-def _build_minimal_config(db_type, host, port, username, password, database, config_file):
-    """Build minimal configuration for connection testing."""
-    from .config import AppConfig, DatabaseType, SqlServerConfig, SnowflakeConfig, TransferConfig
-    
-    # Create source config based on database type
-    if db_type == DatabaseType.SQLSERVER:
-        from .config import SqlServerConfig
-        source_config = SqlServerConfig(
-            host=host,
-            port=port or 1433,
-            username=username,
-            password=password,
-            database=database
-        )
-    else:
-        from .config import DatabaseConfig
-        source_config = DatabaseConfig(
-            host=host,
-            port=port or 5432,
-            username=username,
-            password=password,
-            database=database
-        )
-    
-    # Dummy Snowflake config (not used for listing tables)
-    snowflake_config = SnowflakeConfig(
-        account="dummy",
-        user="dummy",
-        password="dummy",
-        role="dummy",
-        warehouse="dummy",
-        database="dummy"
-    )
-    
-    transfer_config = TransferConfig(source_table="dummy")
-    
-    return AppConfig(
-        database_type=db_type,
-        source_db=source_config,
-        snowflake=snowflake_config,
-        transfer=transfer_config
-    )
-
-def _show_dry_run(config):
-    """Show what would be transferred in a dry run."""
-    console.print("\n[bold yellow]DRY RUN - No data will be transferred[/bold yellow]")
-    
-    table = Table(title="Transfer Configuration")
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value", style="green")
-    
-    table.add_row("Database Type", config.database_type.value)
-    table.add_row("Source Host", config.source_db.host)
-    table.add_row("Source Database", config.source_db.database)
-    table.add_row("Source Table", config.transfer.source_table)
-    table.add_row("Snowflake Account", config.snowflake.account)
-    table.add_row("Snowflake Database", config.snowflake.database)
-    table.add_row("Snowflake Schema", config.snowflake.schema)
-    table.add_row("Destination Table", config.transfer.destination_table)
-    table.add_row("Transfer Mode", config.transfer.mode)
-    table.add_row("Batch Size", str(config.transfer.batch_size))
-    table.add_row("Max Workers", str(config.transfer.max_workers))
-    
-    console.print(table)
 
 if __name__ == "__main__":
     app() 

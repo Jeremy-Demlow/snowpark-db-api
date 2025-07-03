@@ -1,32 +1,16 @@
 """Database connection factories for Snowpark DB-API transfers.
 
-This module provides clean connection factories for different database types,
-following the new Snowpark DB-API pattern.
+Clean connection factories.
 """
 
 from typing import Any, Callable
-from .config import (
-    DatabaseType, 
-    SqlServerConfig, 
-    PostgreSQLConfig, 
-    MySQLConfig, 
-    OracleConfig, 
-    DatabricksConfig,
-    DatabaseConfig
-)
+from .config import DatabaseType, SourceConfig
 import logging
 
 logger = logging.getLogger(__name__)
 
-def create_sqlserver_connection(config: SqlServerConfig) -> Callable[[], Any]:
-    """Create a SQL Server connection factory function.
-    
-    Args:
-        config: SQL Server configuration
-        
-    Returns:
-        Connection factory function that returns a pyodbc connection
-    """
+def create_sqlserver_connection(config: SourceConfig) -> Callable[[], Any]:
+    """Create a SQL Server connection factory function."""
     def connection_factory():
         try:
             import pyodbc
@@ -56,15 +40,8 @@ def create_sqlserver_connection(config: SqlServerConfig) -> Callable[[], Any]:
     
     return connection_factory
 
-def create_postgresql_connection(config: PostgreSQLConfig) -> Callable[[], Any]:
-    """Create a PostgreSQL connection factory function.
-    
-    Args:
-        config: PostgreSQL configuration
-        
-    Returns:
-        Connection factory function that returns a psycopg2 connection
-    """
+def create_postgresql_connection(config: SourceConfig) -> Callable[[], Any]:
+    """Create a PostgreSQL connection factory function."""
     def connection_factory():
         try:
             import psycopg2
@@ -88,15 +65,8 @@ def create_postgresql_connection(config: PostgreSQLConfig) -> Callable[[], Any]:
     
     return connection_factory
 
-def create_mysql_connection(config: MySQLConfig) -> Callable[[], Any]:
-    """Create a MySQL connection factory function.
-    
-    Args:
-        config: MySQL configuration
-        
-    Returns:
-        Connection factory function that returns a pymysql connection
-    """
+def create_mysql_connection(config: SourceConfig) -> Callable[[], Any]:
+    """Create a MySQL connection factory function."""
     def connection_factory():
         try:
             import pymysql
@@ -120,15 +90,8 @@ def create_mysql_connection(config: MySQLConfig) -> Callable[[], Any]:
     
     return connection_factory
 
-def create_oracle_connection(config: OracleConfig) -> Callable[[], Any]:
-    """Create an Oracle connection factory function.
-    
-    Args:
-        config: Oracle configuration
-        
-    Returns:
-        Connection factory function that returns an oracledb connection
-    """
+def create_oracle_connection(config: SourceConfig) -> Callable[[], Any]:
+    """Create an Oracle connection factory function."""
     def connection_factory():
         try:
             import oracledb
@@ -155,15 +118,8 @@ def create_oracle_connection(config: OracleConfig) -> Callable[[], Any]:
     
     return connection_factory
 
-def create_databricks_connection(config: DatabricksConfig) -> Callable[[], Any]:
-    """Create a Databricks connection factory function.
-    
-    Args:
-        config: Databricks configuration
-        
-    Returns:
-        Connection factory function that returns a databricks-sql connection
-    """
+def create_databricks_connection(config: SourceConfig) -> Callable[[], Any]:
+    """Create a Databricks connection factory function."""
     def connection_factory():
         try:
             import databricks.sql
@@ -185,19 +141,8 @@ def create_databricks_connection(config: DatabricksConfig) -> Callable[[], Any]:
     
     return connection_factory
 
-def get_connection_factory(database_type: DatabaseType, config: DatabaseConfig) -> Callable[[], Any]:
-    """Get the appropriate connection factory based on database type.
-    
-    Args:
-        database_type: Type of source database
-        config: Database configuration
-        
-    Returns:
-        Connection factory function
-        
-    Raises:
-        ValueError: If database type is not supported
-    """
+def create_connection(database_type: DatabaseType, config: SourceConfig) -> Any:
+    """Create database connection. Main entry point."""
     factories = {
         DatabaseType.SQLSERVER: create_sqlserver_connection,
         DatabaseType.POSTGRESQL: create_postgresql_connection,
@@ -209,9 +154,10 @@ def get_connection_factory(database_type: DatabaseType, config: DatabaseConfig) 
     if database_type not in factories:
         raise ValueError(f"Unsupported database type: {database_type}")
     
-    return factories[database_type](config)
+    factory = factories[database_type](config)
+    return factory()
 
-def test_connection(connection_factory: Callable[[], Any]) -> bool:
+def test_connection_factory(connection_factory: Callable[[], Any]) -> bool:
     """Test if a connection factory works.
     
     Args:
