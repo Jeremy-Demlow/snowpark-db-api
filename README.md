@@ -9,7 +9,6 @@
 |---------------|----------------|----------------|
 | **SQL Server** | ✅ Full Support | ✅ **Extensively Tested** |
 | **PostgreSQL** | 🔧 Code Support | ⚠️ **Needs Testing** |
-| **MySQL** | 🔧 Code Support | ⚠️ **Needs Testing** |
 | **Oracle** | 🔧 Code Support | ⚠️ **Needs Testing** |
 | **Databricks** | 🔧 Code Support | ⚠️ **Needs Testing** |
 
@@ -118,34 +117,6 @@ graph TB
 # Why do we need a fake table name?!
 --source-table "fake_name" --query "(SELECT * FROM real_table) AS fake_name"
 ```
-
-**✅ NEW CLEAN WAY:**
-```python
-# Simple, honest, no fake names
-transfer("(SELECT * FROM real_table) AS destination_name")
-```
-
-### 🎯 **PROVEN WITH REAL DATA**
-
-We tested with **actual database tables** and **real timestamp filtering patterns**:
-
-| **Test Scenario** | **Query Pattern** | **Result** | **Performance** |
-|-------------------|-------------------|------------|-----------------|
-| **🎯 Customer Orders** | `WHERE last_updated > '2024-01-01'` | ✅ **4 rows** | **6.8 seconds** |
-| **🎲 Filtered Data** | `WHERE datetime_col > CAST('2023-01-01' AS DATETIME)` | ✅ **500 rows** | **7.8 seconds** |
-| **👤 Customer Data** | `WHERE id IS NOT NULL` (full table) | ✅ **1 row** | **6.0 seconds** |
-
-**All transfers completed successfully with auto-derived destinations from query aliases - no fake names required!**
-
-### ✅ Key Benefits
-
-- **No more fake source table names** - everything is honest and transparent
-- **Auto-derived destinations** - table names come from query aliases
-- **Progressive complexity** - start simple, add power as needed
-- **Complete transparency** - see exactly what's happening at every level
-- **Composable building blocks** - mix and match components
-- **Flexible configuration** - three different approaches that work together
-
 ---
 
 ## 📄 METHOD 1: .env File Configuration (Recommended for Getting Started)
@@ -653,71 +624,75 @@ jobs:
 
 ---
 
-## 🔄 MIXING CONFIGURATION METHODS
+## ⚡ CLI Usage (Quick & Simple)
 
-### 📊 Priority Order (Highest to Lowest)
+The fastest way to get started is with the command-line interface:
 
-1. **CLI Arguments** - Override everything
-2. **Pythonic Config** - Override .env files  
-3. **Environment Variables** - Override .env files
-4. **.env Files** - Base configuration
-
-### 🎯 Practical Mixing Examples
-
-#### Base .env + CLI Overrides
+### 🔧 Setup (One Time)
 ```bash
-# .env file has base configuration
-DB_TYPE=sqlserver
-SOURCE_HOST=default-server.com
-SNOWFLAKE_ACCOUNT=default-account
+# 1. Copy and edit environment file
+cp env-example .env
+# Edit .env with your database credentials
 
-# CLI overrides specific values for this run
+# 2. Test your connection
+python -m snowpark_db_api test-connection
+```
+
+### 🚀 Basic Commands
+
+```bash
+# List available tables
+python -m snowpark_db_api list-tables
+
+# Preview table data
+python -m snowpark_db_api preview sales_data --rows 20
+
+# Test custom queries
+python -m snowpark_db_api query "SELECT TOP 10 * FROM dbo.orders" --limit 10
+
+# Transfer entire table
+python -m snowpark_db_api transfer --source-table dbo.customers
+
+# Transfer with custom query (destination auto-derived from alias)
 python -m snowpark_db_api transfer \
-  --source-host special-server.com \
-  --destination-table SPECIAL_TABLE \
-  --query "SELECT * FROM dbo.special_data"
+  --query "(SELECT * FROM dbo.orders WHERE date >= '2024-01-01') AS recent_orders"
 ```
 
-#### Pythonic Base + Environment Overrides
-```python
-from snowpark_db_api.config import Config, SourceConfig
-import os
+### 🔄 Complete CLI Workflow
 
-# Base configuration in code
-base_config = Config(
-    database_type=DatabaseType.SQLSERVER,
-    source=SourceConfig(
-        host="default-server.com",
-        database="DefaultDB",
-        username="default_user",
-        password="your_password"
-    )
-)
+Here's a typical development session:
 
-# Override with environment variables
-config = base_config.copy()
-if os.getenv("SOURCE_HOST"):
-    config.source.host = os.getenv("SOURCE_HOST")
-if os.getenv("SOURCE_DATABASE"):
-    config.source.database = os.getenv("SOURCE_DATABASE")
+```bash
+# 1. Verify connection works
+python -m snowpark_db_api test-connection
 
-# Now SOURCE_HOST and SOURCE_DATABASE environment variables override the defaults
-from snowpark_db_api import transfer
-transfer("dbo.data", config=config)
+# 2. Explore what data is available
+python -m snowpark_db_api list-tables
+python -m snowpark_db_api preview customer_orders --rows 50
+
+# 3. Test your query first
+python -m snowpark_db_api query \
+  "SELECT * FROM customer_orders WHERE status = 'completed'" \
+  --limit 100
+
+# 4. Run small test transfer
+python -m snowpark_db_api transfer \
+  --query "(SELECT TOP 100 * FROM customer_orders) AS test_sample"
+
+# 5. Full production transfer
+python -m snowpark_db_api transfer --source-table customer_orders
 ```
 
-#### .env + Pythonic + CLI (All Three!)
-```python
-# 1. Start with .env file
-from snowpark_db_api import get_config
-base_config = get_config()  # Loads from .env
+### 🛠️ Configuration Options
 
-# 2. Override with Pythonic changes
-base_config.transfer.mode = "append"  # Change mode
-base_config.transfer.fetch_size = 50000  # Increase fetch size
+The CLI uses your `.env` file automatically, but you can override settings:
 
-# 3. CLI can still override everything
-# python -m snowpark_db_api --mode overwrite --fetch-size 1000 --query "..."
+```bash
+# Generate configuration template
+python -m snowpark_db_api config-template --output my-config.yaml
+
+# All commands automatically use .env configuration
+# No need to specify connection details repeatedly!
 ```
 
 ---
@@ -789,66 +764,6 @@ engine = LowLevelTransferEngine(config)
 
 ---
 
-## 🧪 REAL-WORLD TEST RESULTS
-
-### 🎯 Three Comprehensive Scenarios Tested
-
-We validated the library with **actual database transfers** using **real timestamp filtering patterns**:
-
-#### ✅ **Scenario 1: Customer Orders with Date Filtering**
-```python
-# Query Pattern: Timestamp filtering for recent orders
-query = """(SELECT o_orderkey as order_id, o_custkey as customer_id, 
-                  o_totalprice as order_amount, 'COMPLETED' as order_status,
-                  o_orderdate as last_updated
-           FROM dbo.ORDERS
-           WHERE o_orderdate >= CAST('2020-01-01 00:00:00' AS DATE)) AS customer_orders"""
-
-# Result: ✅ 4 rows transferred in 6.8 seconds
-# Destination: CUSTOMER_ORDERS (auto-derived from alias)
-```
-
-#### ✅ **Scenario 2: Large Dataset with DateTime Filtering**
-```python
-# Query Pattern: Complex filtering with datetime columns
-query = """(SELECT TOP 500 ID, Column0, Column1, Column2, Column3, Column4, 
-                  Column5 as last_updated, Column6, Column7, Column8
-           FROM dbo.RandomDataWith100Columns
-           WHERE Column5 > CAST('2023-01-01 00:00:00' AS DATETIME)) AS filtered_data"""
-
-# Result: ✅ 500 rows transferred in 7.8 seconds  
-# Destination: FILTERED_DATA (auto-derived from alias)
-```
-
-#### ✅ **Scenario 3: Customer Data with Business Logic**
-```python
-# Query Pattern: Full customer data with column aliasing
-query = """(SELECT Id as customer_id, 
-                   FullName as customer_name, 
-                   Country as customer_country, 
-                   Notes as customer_notes
-            FROM dbo.UserProfile
-            WHERE Id IS NOT NULL) AS customer_data"""
-
-# Result: ✅ 1 row transferred in 6.0 seconds
-# Destination: CUSTOMER_DATA (auto-derived from alias)
-```
-
-### 📊 Performance Summary
-
-| **Scenario** | **Source Table** | **Rows** | **Duration** | **Snowflake Table** | **Query Pattern** |
-|--------------|------------------|----------|--------------|-------------------|-------------------|
-| **Customer Orders** | dbo.ORDERS | 4 | 6.8s | CUSTOMER_ORDERS | Date filtering |
-| **Filtered Data** | RandomDataWith100Columns | 500 | 7.8s | FILTERED_DATA | DateTime filtering |
-| **Customer Data** | UserProfile | 1 | 6.0s | CUSTOMER_DATA | Full table with aliases |
-
-**Key Insights:**
-- ✅ **Consistent Performance**: ~6-8 seconds across different data sizes
-- ✅ **Auto-Derived Destinations**: No fake table names required
-- ✅ **Real Query Patterns**: Timestamp filtering, aggregations, aliasing all work
-- ✅ **Production Ready**: Proven with actual database connections and transfers
-
----
 
 ## 🧪 TESTING WITH DIFFERENT CONFIGURATIONS
 
@@ -877,27 +792,6 @@ python -m snowpark_db_api test-connection \
   --snowflake-account your_account
 ```
 
-### 🎯 Test Small First (Always!)
-
-```python
-# Always test with small data first, regardless of configuration method!
-
-from snowpark_db_api import transfer_sample
-
-# Test with .env
-transfer_sample("dbo.huge_table", rows=10)
-
-# Test with custom config - environment variable approach
-import os
-os.environ['SNOWFLAKE_DATABASE'] = 'TEST_DB'
-transfer_sample("dbo.huge_table", rows=10)
-
-# Test with CLI
-python -m snowpark_db_api transfer \
-  --source-table dbo.huge_table \
-  --limit 10 \
-  # ... other config flags
-```
 
 ---
 
@@ -953,28 +847,7 @@ docker run --rm snowpark-transfer \
 
 ---
 
-## 🛠️ CONFIGURATION TROUBLESHOOTING
 
-### 🔍 Debug Configuration Loading
-
-```python
-from snowpark_db_api import get_config
-
-# See exactly what configuration is loaded
-config = get_config()
-print("Database Type:", config.database_type)
-print("Source Host:", config.source.host)
-print("Snowflake Account:", config.snowflake.account)
-print("Transfer Mode:", config.transfer.mode)
-
-# Check if .env file is being loaded
-import os
-print(".env file exists:", os.path.exists('.env'))
-
-# See all environment variables
-import pprint
-pprint.pprint(dict(os.environ))
-```
 
 ### 🚨 Common Configuration Issues
 
@@ -1016,114 +889,7 @@ python -m snowpark_db_api transfer \
   --log-level DEBUG  # Enable debug logging to see what's happening
 ```
 
----
-
-## 📊 CONFIGURATION COMPARISON TABLE
-
-| Feature | .env Files | Pythonic Config | CLI Arguments |
-|---------|------------|-----------------|---------------|
-| **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
-| **Type Safety** | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐ |
-| **IDE Support** | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐ |
-| **Version Control** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐ |
-| **CI/CD Friendly** | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| **Quick Overrides** | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| **Complex Logic** | ⭐ | ⭐⭐⭐⭐⭐ | ⭐ |
-| **Secrets Management** | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐ |
-
----
-
-## 🚀 GETTING STARTED (Choose Your Path!)
-
-### Path 1: .env File (Recommended for Beginners)
-```bash
-# 1. Clone repository
-git clone <repository-url>
-cd snowpark-db-api
-
-# 2. Create .env file
-cp env-example .env
-# Edit .env with your credentials
-
-# 3. Test connection
-docker compose run --rm snowpark-cli python -c "
-from snowpark_db_api import get_config
-from snowpark_db_api.core import DataTransfer
-config = get_config()
-transfer = DataTransfer(config)
-print('Connection test:', transfer.setup_connections())
-"
-
-# 4. Transfer data
-docker compose run --rm snowpark-cli python -c "
-from snowpark_db_api import transfer
-transfer('(SELECT TOP 10 * FROM dbo.test_table) AS sample_data')
-"
-```
-
-### Path 2: Pythonic Config (Recommended for Applications)
-```python
-# 1. Install package
-pip install snowpark-db-api
-
-# 2. Create configuration
-from snowpark_db_api.config import Config, SourceConfig, SnowflakeConfig
-
-config = Config(
-    database_type=DatabaseType.SQLSERVER,
-    source=SourceConfig(
-        host="your-server.database.windows.net",
-        database="your_database",
-        username="your_username",
-        password="your_password",
-        port=1433,
-        trusted_connection=False,
-        encrypt=True
-    ),
-    snowflake=SnowflakeConfig(
-        account="your_account.region.cloud",
-        user="your_snowflake_user",
-        password="your_snowflake_password",
-        role="SYSADMIN",
-        warehouse="COMPUTE_WH",
-        database="your_snowflake_database",
-        db_schema="PUBLIC"
-    ),
-    transfer=TransferConfig(
-        destination_table="MY_TABLE",
-        mode="overwrite",
-        fetch_size=10000,
-        max_workers=4,
-        query_timeout=600,
-        save_metadata=False
-    ),
-    log_level="INFO"
-)
-
-# 3. Transfer data
-from snowpark_db_api import transfer
-transfer("dbo.your_table", config=config)
-```
-
-### Path 3: CLI (Recommended for Automation)
-```bash
-# 1. Set environment variables
-export SNOWFLAKE_ACCOUNT=your_account.region.cloud
-export SNOWFLAKE_USER=your_snowflake_user
-export SNOWFLAKE_PASSWORD=your_snowflake_password
-export SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-export SNOWFLAKE_DATABASE=your_snowflake_database
-
-# 2. Run transfer
-python -m snowpark_db_api transfer \
-  --source-host your-server.database.windows.net \
-  --source-database your_database \
-  --source-username your_username \
-  --source-password your_password \
-  --query "(SELECT * FROM dbo.orders WHERE date >= '2024-01-01') AS recent_orders"
-```
-
-### Path 4: Jupyter Notebooks (Recommended for Learning & Interactive Development)
+### Jupyter Notebooks (Recommended for Learning & Interactive Development)
 ```bash
 # 1. Set up environment
 cp env-example .env
@@ -1177,11 +943,6 @@ The layered architecture makes it easy to contribute:
 
 ---
 
-## 📄 LICENSE
-
-MIT License - see [LICENSE](LICENSE) file.
-
----
 
 ## 🎉 READY TO GET STARTED?
 
@@ -1194,69 +955,10 @@ transfer("your_table")
 ```
 
 Built with ❤️ for **simple to use** and **infinitely customizable** data transfers.
+---
 
+## 📄 LICENSE
 
-<!-- WARNING: THIS FILE WAS AUTOGENERATED! DO NOT EDIT! -->
+MIT License - see [LICENSE](LICENSE) file.
 
-This file will become your README and also the index of your
-documentation.
-
-## Developer Guide
-
-If you are new to using `nbdev` here are some useful pointers to get you
-started.
-
-### Install snowpark_db_api in Development mode
-
-``` sh
-# make sure snowpark_db_api package is installed in development mode
-$ pip install -e .
-
-# make changes under nbs/ directory
-# ...
-
-# compile to have changes apply to snowpark_db_api
-$ nbdev_prepare
-```
-
-## Usage
-
-### Installation
-
-Install latest from the GitHub
-[repository](https://github.com/Jeremy-Demlow/snowpark-db-api):
-
-``` sh
-$ pip install git+https://github.com/Jeremy-Demlow/snowpark-db-api.git
-```
-
-or from [conda](https://anaconda.org/Jeremy-Demlow/snowpark-db-api)
-
-``` sh
-$ conda install -c Jeremy-Demlow snowpark_db_api
-```
-
-or from [pypi](https://pypi.org/project/snowpark-db-api/)
-
-``` sh
-$ pip install snowpark_db_api
-```
-
-### Documentation
-
-Documentation can be found hosted on this GitHub
-[repository](https://github.com/Jeremy-Demlow/snowpark-db-api)’s
-[pages](https://Jeremy-Demlow.github.io/snowpark-db-api/). Additionally
-you can find package manager specific guidelines on
-[conda](https://anaconda.org/Jeremy-Demlow/snowpark-db-api) and
-[pypi](https://pypi.org/project/snowpark-db-api/) respectively.
-
-## How to use
-
-Fill me in please! Don’t forget code examples:
-
-``` python
-1+1
-```
-
-    2
+---
